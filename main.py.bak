@@ -1,0 +1,76 @@
+import os
+import argparse
+from dotenv import load_dotenv
+from openai import OpenAI
+# from google import genai
+from google.genai import types
+from prompts import system_prompt
+from functions.call_function import call_function, available_functions
+
+
+def main():
+    load_dotenv()
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key is None:
+        raise RuntimeError("No api key found")
+
+    client = OpenAI.Client(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key
+    )
+
+    parser = argparse.ArgumentParser(description="Chatbot")
+
+    parser.add_argument("user_prompt", type=str, help="User prompt")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output"
+    )
+    args = parser.parse_args()
+
+    messages: list[types.Content] = [
+        types.Content(role="user", parts=[types.Part(text=args.user_prompt)])
+    ]
+
+    # temperature=0 makes the responses more deterministic, aka reliable
+    message_config = types.GenerateContentConfig(
+                        tools=[available_functions],
+                        system_instruction=system_prompt,
+                        temperature=0,
+                    )
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=messages,
+        config=message_config,
+    )
+
+    if response.usage_metadata is None:
+        raise RuntimeError("No usage metadata; Did the call fail?")
+
+    if args.verbose:
+        print(f"User prompt: {args.user_prompt}" +
+              "Prompt tokens:" +
+              f"{response.usage_metadata.prompt_token_count}\n" +
+              "Response tokens:" +
+              f"{response.usage_metadata.candidates_token_count}")
+
+    message = response.message
+    if response.function_calls is not None:
+        for tool_call in message.tool_calls:
+            if tool_call.type != "function":
+                continue
+            result_message = call_function(tool_call, args.verbose)
+            if not result_message.get("content"):
+                raise RuntimeError("Empty function response for " +
+                                   f"{tool_call.function.name}"
+                                   )
+            if args.verbose:
+                print(f"-> {result_message['content']}")
+
+    # print(response.text)
+
+
+if __name__ == "__main__":
+    main()
